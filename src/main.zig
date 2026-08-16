@@ -40,8 +40,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
 
     const output_size = try calc_output_size(ctx.?);
-    var buffer = try allocator.alloc(u8, output_size);
-    @memset(buffer[0..], 0);
+    const buffer = try allocator.alloc(u8, output_size);
 
     try read_data_to_buffer(ctx.?, buffer);
     try apply_image_filter(buffer);
@@ -57,8 +56,8 @@ fn get_image_header(ctx: *c.spng_ctx) !c.spng_ihdr {
     return image_header;
 }
 
-fn calc_output_size(ctx: *c.spng_ctx) !u64 {
-    var output_size: u64 = 0;
+fn calc_output_size(ctx: *c.spng_ctx) !usize {
+    var output_size: usize = 0;
     const status = c.spng_decoded_image_size(
         ctx,
         c.SPNG_FMT_RGBA8,
@@ -85,15 +84,18 @@ fn read_data_to_buffer(ctx: *c.spng_ctx, buffer: []u8) !void {
 }
 
 fn apply_image_filter(buffer: []u8) !void {
-    const red_factor: f16 = 0.2126;
-    const green_factor: f16 = 0.7152;
-    const blue_factor: f16 = 0.0722;
+    const red_factor: f32 = 0.2126;
+    const green_factor: f32 = 0.7152;
+    const blue_factor: f32 = 0.0722;
+
     var index: usize = 0;
     while (index < buffer.len) : (index += 4) {
-        const rf: f16 = @floatFromInt(buffer[index]);
-        const gf: f16 = @floatFromInt(buffer[index + 1]);
-        const bf: f16 = @floatFromInt(buffer[index + 2]);
-        const y_linear: f16 = ((rf * red_factor) + (gf * green_factor) + (bf * blue_factor));
+        const rf: f32 = @floatFromInt(buffer[index]);
+        const gf: f32 = @floatFromInt(buffer[index + 1]);
+        const bf: f32 = @floatFromInt(buffer[index + 2]);
+
+        const y_linear: f32 = ((rf * red_factor) + (gf * green_factor) + (bf * blue_factor));
+
         buffer[index] = @intFromFloat(y_linear);
         buffer[index + 1] = @intFromFloat(y_linear);
         buffer[index + 2] = @intFromFloat(y_linear);
@@ -101,7 +103,11 @@ fn apply_image_filter(buffer: []u8) !void {
 }
 
 fn save_png(image_header: *c.spng_ihdr, buffer: []u8) !void {
-    const path = "resut.png";
+    var image_header_copy = image_header.*;
+    image_header_copy.bit_depth = 8;
+    image_header_copy.color_type = c.SPNG_COLOR_TYPE_TRUECOLOR_ALPHA;
+
+    const path = "result.png";
     const file_descriptor = c.fopen(path.ptr, "wb");
     if (file_descriptor == null) {
         return error.CouldNotOpenFile;
@@ -117,8 +123,12 @@ fn save_png(image_header: *c.spng_ihdr, buffer: []u8) !void {
     }
     defer c.spng_ctx_free(ctx);
 
-    _ = c.spng_set_png_file(ctx, @ptrCast(file_descriptor));
-    _ = c.spng_set_ihdr(ctx, image_header);
+    if (c.spng_set_png_file(ctx, @ptrCast(file_descriptor)) != 0) {
+        return error.CouldNotSetPngFile;
+    }
+    if (c.spng_set_ihdr(ctx, &image_header_copy) != 0) {
+        return error.CouldNotSetImageHeader;
+    }
 
     const encode_status = c.spng_encode_image(
         ctx,
@@ -128,6 +138,8 @@ fn save_png(image_header: *c.spng_ihdr, buffer: []u8) !void {
         c.SPNG_ENCODE_FINALIZE,
     );
     if (encode_status != 0) {
+        const error_desc = c.spng_strerror(encode_status);
+        std.log.err("Failed to encode image: {s}", .{error_desc});
         return error.CouldNotEncodeImage;
     }
 }
